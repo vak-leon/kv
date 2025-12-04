@@ -18,8 +18,8 @@ target
 !README.md
 !CONTRIBUTING.md
 
-# GitHub actions
-!.github
-
 # Irrelevant directories
 .*/
+
+# GitHub actions
+!.github/

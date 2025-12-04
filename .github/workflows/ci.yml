@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run unit and integration tests
+        run: cargo test --verbose
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            alias: x64
+            qemu: ""
+          - target: i686-unknown-linux-musl
+            alias: x86
+            qemu: qemu-i386-static
+          - target: aarch64-unknown-linux-musl
+            alias: arm64
+            linker: gcc-aarch64-linux-gnu
+            qemu: qemu-aarch64-static
+          - target: arm-unknown-linux-musleabihf
+            alias: arm
+            linker: gcc-arm-linux-gnueabihf
+            qemu: qemu-arm-static
+          - target: riscv64gc-unknown-linux-musl
+            alias: riscv64
+            linker: gcc-riscv64-linux-gnu
+            qemu: qemu-riscv64-static
+          - target: powerpc-unknown-linux-gnu
+            alias: ppc
+            linker: gcc-powerpc-linux-gnu
+            qemu: qemu-ppc-static
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install cross-linker
+        if: matrix.linker
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.linker }}
+
+      - name: Install QEMU
+        if: matrix.qemu
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build integration tests
+        run: cargo test --release --target ${{ matrix.target }} --no-run
+
+      - name: Check binary
+        run: |
+          file target/${{ matrix.target }}/release/kv
+          ls -lh target/${{ matrix.target }}/release/kv
+
+      - name: Run integration tests (native)
+        if: matrix.qemu == ''
+        run: cargo test --release --target ${{ matrix.target }} --verbose
+
+      - name: Run integration tests (QEMU)
+        if: matrix.qemu
+        run: |
+          # Find and run the integration test binary via QEMU
+          for test_bin in target/${{ matrix.target }}/release/deps/integration-*; do
+            if [ -x "$test_bin" ] && [ ! -d "$test_bin" ]; then
+              echo "Running: $test_bin"
+              ${{ matrix.qemu }} "$test_bin" --test-threads=1
+              break
+            fi
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kv-${{ matrix.alias }}
+          path: target/${{ matrix.target }}/release/kv

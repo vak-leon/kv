@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            alias: x64
+            qemu: ""
+          - target: i686-unknown-linux-musl
+            alias: x86
+            qemu: qemu-i386-static
+          - target: aarch64-unknown-linux-musl
+            alias: arm64
+            linker: gcc-aarch64-linux-gnu
+            qemu: qemu-aarch64-static
+          - target: arm-unknown-linux-musleabihf
+            alias: arm
+            linker: gcc-arm-linux-gnueabihf
+            qemu: qemu-arm-static
+          - target: riscv64gc-unknown-linux-musl
+            alias: riscv64
+            linker: gcc-riscv64-linux-gnu
+            qemu: qemu-riscv64-static
+          - target: powerpc-unknown-linux-gnu
+            alias: ppc
+            linker: gcc-powerpc-linux-gnu
+            qemu: qemu-ppc-static
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install cross-linker
+        if: matrix.linker
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.linker }}
+
+      - name: Install QEMU
+        if: matrix.qemu
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Run smoke test (native)
+        if: matrix.qemu == ''
+        run: |
+          ./target/${{ matrix.target }}/release/kv --version
+          ./target/${{ matrix.target }}/release/kv mem
+
+      - name: Run smoke test (QEMU)
+        if: matrix.qemu
+        run: |
+          ${{ matrix.qemu }} ./target/${{ matrix.target }}/release/kv --version
+          ${{ matrix.qemu }} ./target/${{ matrix.target }}/release/kv mem
+
+      - name: Rename binary
+        run: |
+          cp target/${{ matrix.target }}/release/kv kv-${{ matrix.alias }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kv-${{ matrix.alias }}
+          path: kv-${{ matrix.alias }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir release
+          for dir in artifacts/kv-*; do
+            cp "$dir"/* release/
+          done
+          ls -la release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
