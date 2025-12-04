@@ -21,5 +21,6 @@ target
 # Irrelevant directories
 .*/
 
-# GitHub actions
+# Required hidden directories
 !.github/
+!.cargo/

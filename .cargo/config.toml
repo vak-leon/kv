@@ -1,0 +1,87 @@
+# Cargo configuration for kv
+# Optimized for building static binaries on musl targets
+
+[build]
+# Uncomment to set a default target:
+# target = "x86_64-unknown-linux-musl"
+
+# Aliases for cross-compilation - shorter than typing full target triples
+[alias]
+# Usage: cargo x86_64 (equivalent to cargo build --release --target x86_64-unknown-linux-musl)
+x86_64 = "build --release --target x86_64-unknown-linux-musl"
+x86 = "build --release --target i686-unknown-linux-musl"
+# ARM, RISC-V, and MIPS targets include 'dt' feature - device trees are standard on these platforms
+arm64 = "build --release --target aarch64-unknown-linux-musl --features dt"
+aarch64 = "build --release --target aarch64-unknown-linux-musl --features dt"
+arm = "build --release --target arm-unknown-linux-musleabihf --features dt"
+riscv64 = "build --release --target riscv64gc-unknown-linux-musl --features dt"
+mips = "build --release --target mips-unknown-linux-musl --features dt"
+mipsel = "build --release --target mipsel-unknown-linux-musl --features dt"
+ppc = "build --release --target powerpc-unknown-linux-gnu --features dt"
+# Note: riscv32 with musl/Linux has limited support - most RISC-V Linux boards are 64-bit
+# Note: mips/mipsel musl targets require nightly or custom toolchain
+
+# x86_64 musl target - fully static binary
+[target.x86_64-unknown-linux-musl]
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "target-feature=+crt-static",
+]
+
+# i686 musl target - 32-bit x86 (still common in industrial embedded)
+[target.i686-unknown-linux-musl]
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "target-feature=+crt-static",
+]
+
+# aarch64 musl target - for ARM64 embedded boards
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-gnu-gcc"
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "target-feature=+crt-static",
+]
+
+# arm musl target - for 32-bit ARM (Raspberry Pi, BeagleBone, etc.)
+# Uses hard-float ABI (musleabihf) - most common for Linux-capable ARM
+[target.arm-unknown-linux-musleabihf]
+linker = "arm-linux-gnueabihf-gcc"
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "target-feature=+crt-static",
+]
+
+# riscv64 musl target - for RISC-V boards (SiFive, StarFive, etc.)
+[target.riscv64gc-unknown-linux-musl]
+linker = "riscv64-linux-gnu-gcc"
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "target-feature=+crt-static",
+]
+
+# mips musl target - big-endian MIPS (routers, embedded devices)
+[target.mips-unknown-linux-musl]
+linker = "mips-linux-gnu-gcc"
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "target-feature=+crt-static",
+]
+
+# mipsel musl target - little-endian MIPS
+[target.mipsel-unknown-linux-musl]
+linker = "mipsel-linux-gnu-gcc"
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "target-feature=+crt-static",
+]
+
+# powerpc gnu target - big-endian PowerPC
+# Uses GNU libc (not musl) because powerpc-unknown-linux-musl is not available
+# in stable Rust. Building with nightly + build-std is possible but fragile.
+# Result: static binary but larger (~1.2MB vs ~550KB) due to glibc static linking.
+[target.powerpc-unknown-linux-gnu]
+linker = "powerpc-linux-gnu-gcc"
+rustflags = [
+    "-C", "target-feature=+crt-static",
+]
