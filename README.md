@@ -14,35 +14,60 @@ intended.
 
 Pre-built static binaries are available from [GitHub Releases](https://github.com/vak-leon/kv/releases/latest).
 
-### Download for your architecture:
+### Download, Verify, Install
 
-**With curl:**
+Each release includes SHA256 checksums for verification.
+
+**x86_64** (most Linux servers and desktops):
 
 ```bash
-# x86_64 (most Linux servers and desktops)
-curl -Lo kv https://github.com/vak-leon/kv/releases/latest/download/kv-x64 && chmod +x kv
-
-# ARM64 (Raspberry Pi 4/5, Jetson, Apple Silicon VMs)
-curl -Lo kv https://github.com/vak-leon/kv/releases/latest/download/kv-arm64 && chmod +x kv
+curl -LO https://github.com/vak-leon/kv/releases/latest/download/kv-x64
+curl -LO https://github.com/vak-leon/kv/releases/latest/download/kv-x64.sha256
+sha256sum -c kv-x64.sha256
+mv kv-x64 kv && chmod +x kv
+./kv --version
 ```
 
-**With wget:**
+**ARM64** (Raspberry Pi 4/5, Jetson, Apple Silicon VMs):
 
 ```bash
-# x86_64
-wget -O kv https://github.com/vak-leon/kv/releases/latest/download/kv-x64 && chmod +x kv
-
-# ARM64
-wget -O kv https://github.com/vak-leon/kv/releases/latest/download/kv-arm64 && chmod +x kv
+curl -LO https://github.com/vak-leon/kv/releases/latest/download/kv-arm64
+curl -LO https://github.com/vak-leon/kv/releases/latest/download/kv-arm64.sha256
+sha256sum -c kv-arm64.sha256
+mv kv-arm64 kv && chmod +x kv
+./kv --version
 ```
 
 **Other architectures:**
 Use `kv-x86` (32-bit PC), `kv-arm` (32-bit ARM), `kv-riscv64` (64-bit RISC-V), or `kv-ppc` (PowerPC).
+Each has corresponding `.sha256`, `.sig`, and `.crt` files.
+
+### Verify Signatures (optional)
+
+Releases are signed with [cosign](https://github.com/sigstore/cosign) keyless signing via GitHub Actions OIDC.
+This proves the binary was built by the official release workflow, not a compromised maintainer machine.
+
+```bash
+# Install cosign (https://docs.sigstore.dev/cosign/system_config/installation/)
+# Then verify:
+cosign verify-blob kv-x64 \
+  --signature kv-x64.sig \
+  --certificate kv-x64.crt \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp 'https://github.com/vak-leon/kv/\.github/workflows/release\.yml@refs/tags/v.*'
+```
+
+**Quick install (skip verification):**
+
+```bash
+curl -Lo kv https://github.com/vak-leon/kv/releases/latest/download/kv-x64 && chmod +x kv
+```
 
 **Copy to an embedded board:**
 
 ```bash
-scp kv user@board:/tmp/kv
+scp kv-arm64 user@board:/tmp/kv
+ssh user@board chmod +x /tmp/kv
 ssh user@board /tmp/kv snapshot -jp
 ```
 
@@ -91,7 +116,7 @@ Note: `-f` takes an argument, so keep it separate from combined flags (use `-jv 
 
 Requires Rust 1.85+ (uses Rust 2024 edition).
 
-> [!IMPORTANT]  
+> [!IMPORTANT]
 > See [CONTRIBUTING.md](CONTRIBUTING.md) for full cross-compilation setup.
 
 ```bash
@@ -224,6 +249,7 @@ kv is designed for untrusted environments. See the security table below.
 | Read-only | Only reads from /sys and /proc, never writes |
 | No shell | No command execution, no injection surface |
 | No network | Pure local filesystem operations |
+| Signed releases | Cosign keyless signatures via GitHub Actions OIDC |
 
 ## License
 

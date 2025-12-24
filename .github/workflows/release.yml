@@ -18,28 +18,34 @@ jobs:
           - target: x86_64-unknown-linux-musl
             alias: x64
             qemu: ""
+            features: ""
           - target: i686-unknown-linux-musl
             alias: x86
             qemu: qemu-i386-static
+            features: ""
           - target: aarch64-unknown-linux-musl
             alias: arm64
             linker: gcc-aarch64-linux-gnu
             qemu: qemu-aarch64-static
+            features: dt
           - target: arm-unknown-linux-musleabihf
             alias: arm
             linker: gcc-arm-linux-gnueabihf
             qemu: qemu-arm-static
+            features: dt
           - target: riscv64gc-unknown-linux-musl
             alias: riscv64
             linker: gcc-riscv64-linux-gnu
             qemu: qemu-riscv64-static
+            features: dt
           - target: powerpc-unknown-linux-gnu
             alias: ppc
             linker: gcc-powerpc-linux-gnu
             qemu: qemu-ppc-static
+            features: dt
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -56,7 +62,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y qemu-user-static
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
 
       - name: Run smoke test (native)
         if: matrix.qemu == ''
@@ -75,7 +81,7 @@ jobs:
           cp target/${{ matrix.target }}/release/kv kv-${{ matrix.alias }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: kv-${{ matrix.alias }}
           path: kv-${{ matrix.alias }}
@@ -86,21 +92,31 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
+      id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: artifacts
 
-      - name: Prepare release files
+      - name: Prepare and sign release files
         run: |
           mkdir release
           for dir in artifacts/kv-*; do
             cp "$dir"/* release/
           done
+          cd release
+          for bin in kv-*; do
+            sha256sum "$bin" > "$bin.sha256"
+            cosign sign-blob --yes "$bin" --output-signature "$bin.sig" --output-certificate "$bin.crt"
+          done
+          cd ..
           ls -la release/
 
       - name: Create Release
