@@ -1,35 +1,54 @@
 # Cargo configuration for kv
 #
 # Build options:
-#   cargo build --release    # Standard build (~39KB)
-#   ./build.sh               # Optimized build (~35KB, strips .eh_frame)
+#   ./build.sh                 # Size-optimized release build for one target
+#   cargo <arch>               # Same, via the aliases below (e.g. cargo x86_64)
+#   ./scripts/unit-test.sh     # Unit tests on the host
+#
+# The release aliases pass -Zbuild-std so core is rebuilt with
+# optimize_for_size. That flag stays OUT of the [unstable] section on
+# purpose: applying build-std globally breaks `cargo test` (the test harness
+# needs the prebuilt std, and mixing it with a source-built core gives
+# "duplicate lang item" errors).
 
-[build]
-target = "x86_64-unknown-linux-gnu"
+# Without this, a plain `cargo build` (host target, no --target) leaks the
+# [target.<host>] rustflags below into build scripts, and a build script
+# linked with -nostartfiles crashes. Only affects host artifacts. The kv
+# binary itself still gets the flags.
+target-applies-to-host = false
 
 [unstable]
-build-std = ["core"]
-build-std-features = ["optimize_for_size"]
+target-applies-to-host = true
 
 [alias]
 r = "build --release"
-# Cross-compilation aliases
-x86_64 = "build --release --target x86_64-unknown-linux-gnu"
-x86 = "build --release --target i686-unknown-linux-gnu"
-arm64 = "build --release --target aarch64-unknown-linux-gnu --features dt"
-aarch64 = "build --release --target aarch64-unknown-linux-gnu --features dt"
-arm = "build --release --target arm-unknown-linux-gnueabihf --features dt"
-riscv64 = "build --release --target riscv64gc-unknown-linux-gnu --features dt"
-ppc64 = "build --release --target powerpc64le-unknown-linux-gnu --features dt"
-mips = "build --release --target mipsel-unknown-linux-gnu --features dt"
+# Cross-compilation aliases (size-optimized, used by CI and build.sh too)
+x86_64 = "build --release -Zbuild-std=core -Zbuild-std-features=optimize_for_size --target x86_64-unknown-linux-gnu"
+x86 = "build --release -Zbuild-std=core -Zbuild-std-features=optimize_for_size --target i686-unknown-linux-gnu"
+arm64 = "build --release -Zbuild-std=core -Zbuild-std-features=optimize_for_size --target aarch64-unknown-linux-gnu --features dt"
+aarch64 = "build --release -Zbuild-std=core -Zbuild-std-features=optimize_for_size --target aarch64-unknown-linux-gnu --features dt"
+arm = "build --release -Zbuild-std=core -Zbuild-std-features=optimize_for_size --target arm-unknown-linux-gnueabihf --features dt"
+riscv64 = "build --release -Zbuild-std=core -Zbuild-std-features=optimize_for_size --target riscv64gc-unknown-linux-gnu --features dt"
+ppc64 = "build --release -Zbuild-std=core -Zbuild-std-features=optimize_for_size --target powerpc64le-unknown-linux-gnu --features dt"
+mips = "build --release -Zbuild-std=core -Zbuild-std-features=optimize_for_size --target mipsel-unknown-linux-gnu --features dt"
+
+# All targets default to a fully static, non-PIE, no-RELRO link. That is
+# the smallest binary and matches what -static always produced anyway (gcc
+# drops PIE when -static is given), so there is no ASLR regression - just
+# honesty plus a few KB saved. For an ASLR-capable static-PIE build, use
+# ./build.sh --pie (needs origin's experimental-relocate, see the `pie`
+# cargo feature).
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = [
+    "-C", "relocation-model=static",
     "-C", "link-arg=-nostartfiles",
     "-C", "link-arg=-static",
+    "-C", "link-arg=-no-pie",
     "-C", "link-arg=-Wl,--gc-sections",
     "-C", "link-arg=-Wl,--build-id=none",
-    "-C", "link-arg=-Wl,--no-eh-frame-hdr",
+    "-C", "link-arg=-Wl,-z,norelro",
+    "-C", "force-unwind-tables=no",
     "-Z", "location-detail=none",
     "-Z", "fmt-debug=none",
 ]
@@ -37,22 +56,28 @@ rustflags = [
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
 rustflags = [
+    "-C", "relocation-model=static",
     "-C", "link-arg=-nostartfiles",
     "-C", "link-arg=-static",
+    "-C", "link-arg=-no-pie",
     "-C", "link-arg=-Wl,--gc-sections",
     "-C", "link-arg=-Wl,--build-id=none",
-    "-C", "link-arg=-Wl,--no-eh-frame-hdr",
+    "-C", "link-arg=-Wl,-z,norelro",
+    "-C", "force-unwind-tables=no",
     "-Z", "location-detail=none",
     "-Z", "fmt-debug=none",
 ]
 
 [target.i686-unknown-linux-gnu]
 rustflags = [
+    "-C", "relocation-model=static",
     "-C", "link-arg=-nostartfiles",
     "-C", "link-arg=-static",
+    "-C", "link-arg=-no-pie",
     "-C", "link-arg=-Wl,--gc-sections",
     "-C", "link-arg=-Wl,--build-id=none",
-    "-C", "link-arg=-Wl,--no-eh-frame-hdr",
+    "-C", "link-arg=-Wl,-z,norelro",
+    "-C", "force-unwind-tables=no",
     "-Z", "location-detail=none",
     "-Z", "fmt-debug=none",
 ]
@@ -60,11 +85,14 @@ rustflags = [
 [target.arm-unknown-linux-gnueabihf]
 linker = "arm-linux-gnueabihf-gcc"
 rustflags = [
+    "-C", "relocation-model=static",
     "-C", "link-arg=-nostartfiles",
     "-C", "link-arg=-static",
+    "-C", "link-arg=-no-pie",
     "-C", "link-arg=-Wl,--gc-sections",
     "-C", "link-arg=-Wl,--build-id=none",
-    "-C", "link-arg=-Wl,--no-eh-frame-hdr",
+    "-C", "link-arg=-Wl,-z,norelro",
+    "-C", "force-unwind-tables=no",
     "-Z", "location-detail=none",
     "-Z", "fmt-debug=none",
 ]
@@ -72,11 +100,14 @@ rustflags = [
 [target.riscv64gc-unknown-linux-gnu]
 linker = "riscv64-linux-gnu-gcc"
 rustflags = [
+    "-C", "relocation-model=static",
     "-C", "link-arg=-nostartfiles",
     "-C", "link-arg=-static",
+    "-C", "link-arg=-no-pie",
     "-C", "link-arg=-Wl,--gc-sections",
     "-C", "link-arg=-Wl,--build-id=none",
-    "-C", "link-arg=-Wl,--no-eh-frame-hdr",
+    "-C", "link-arg=-Wl,-z,norelro",
+    "-C", "force-unwind-tables=no",
     "-Z", "location-detail=none",
     "-Z", "fmt-debug=none",
 ]
@@ -84,11 +115,14 @@ rustflags = [
 [target.powerpc64le-unknown-linux-gnu]
 linker = "powerpc64le-linux-gnu-gcc"
 rustflags = [
+    "-C", "relocation-model=static",
     "-C", "link-arg=-nostartfiles",
     "-C", "link-arg=-static",
+    "-C", "link-arg=-no-pie",
     "-C", "link-arg=-Wl,--gc-sections",
     "-C", "link-arg=-Wl,--build-id=none",
-    "-C", "link-arg=-Wl,--no-eh-frame-hdr",
+    "-C", "link-arg=-Wl,-z,norelro",
+    "-C", "force-unwind-tables=no",
     "-Z", "location-detail=none",
     "-Z", "fmt-debug=none",
     "--cfg=rustix_use_experimental_asm",
@@ -103,7 +137,8 @@ rustflags = [
     "-C", "link-arg=-no-pie",
     "-C", "link-arg=-Wl,--gc-sections",
     "-C", "link-arg=-Wl,--build-id=none",
-    "-C", "link-arg=-Wl,--no-eh-frame-hdr",
+    "-C", "link-arg=-Wl,-z,norelro",
+    "-C", "force-unwind-tables=no",
     "-Z", "location-detail=none",
     "-Z", "fmt-debug=none",
     "--cfg=rustix_use_experimental_asm",

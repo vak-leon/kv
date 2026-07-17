@@ -4,8 +4,6 @@
 //! Useful when you need to know if that NFS share actually mounted or
 //! why your rootfs is mysteriously read-only.
 
-#![allow(dead_code)]
-
 use crate::cli::GlobalOptions;
 use crate::fields::mounts as f;
 use crate::filter::matches_any;
@@ -114,10 +112,14 @@ fn decode_mount_escapes(s: &str) -> StackString<256> {
             let d2 = bytes[i + 2];
             let d3 = bytes[i + 3];
             if is_octal_digit(d1) && is_octal_digit(d2) && is_octal_digit(d3) {
-                let val = ((d1 - b'0') * 64) + ((d2 - b'0') * 8) + (d3 - b'0');
-                result.push(val as char);
-                i += 4;
-                continue;
+                // Widened math: \400-\777 would overflow u8 (not a byte value;
+                // the kernel never emits those, but don't panic on them either)
+                let val = ((d1 - b'0') as u32) * 64 + ((d2 - b'0') as u32) * 8 + (d3 - b'0') as u32;
+                if val <= 255 {
+                    result.push(val as u8 as char);
+                    i += 4;
+                    continue;
+                }
             }
         }
         result.push(bytes[i] as char);
@@ -132,10 +134,43 @@ fn is_octal_digit(b: u8) -> bool {
     b >= b'0' && b <= b'7'
 }
 
+#[cfg(test)]
+mod escape_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_kernel_octal_escapes() {
+        assert_eq!(
+            decode_mount_escapes("/mnt/My\\040Documents").as_str(),
+            "/mnt/My Documents"
+        );
+        assert_eq!(decode_mount_escapes("a\\134b").as_str(), "a\\b");
+        assert_eq!(decode_mount_escapes("tab\\011sep").as_str(), "tab\tsep");
+    }
+
+    #[test]
+    fn passes_through_non_escapes() {
+        assert_eq!(decode_mount_escapes("/plain/path").as_str(), "/plain/path");
+        assert_eq!(decode_mount_escapes("trailing\\04").as_str(), "trailing\\04");
+    }
+
+    #[test]
+    fn decodes_high_octal_bytes() {
+        assert_eq!(decode_mount_escapes("\\377").as_str(), "\u{ff}");
+    }
+
+    #[test]
+    fn out_of_range_octal_is_left_literal() {
+        // \777 = 511, not a byte. Kernel never emits it, but arithmetic on
+        // u8 must not overflow (panics in dev builds).
+        assert_eq!(decode_mount_escapes("\\777").as_str(), "\\777");
+    }
+}
+
 /// Entry point for `kv mounts` subcommand.
 pub fn run(opts: &GlobalOptions) -> i32 {
     // Read the entire mounts file
-    let contents: StackString<8192> = match io::read_file_stack(MOUNTS_PATH) {
+    let contents: StackString<32768> = match io::read_file_stack(MOUNTS_PATH) {
         Some(c) => c,
         None => {
             if opts.json {
@@ -158,7 +193,6 @@ pub fn run(opts: &GlobalOptions) -> i32 {
         let mut w = begin_kv_output_streaming(opts.pretty, "mounts");
         w.field_array("data");
 
-        let mut count = 0;
         for line in contents.as_str().lines() {
             if let Some(mount) = MountEntry::parse(line) {
                 // Apply filter if present
@@ -168,17 +202,12 @@ pub fn run(opts: &GlobalOptions) -> i32 {
                     }
                 }
                 mount.write_json(&mut w, opts.verbose);
-                count += 1;
             }
         }
 
         w.end_field_array();
         w.end_object();
         w.finish();
-
-        if count == 0 && filter.is_some() {
-            // Empty result with filter is not an error, just no matches
-        }
     } else {
         let mut count = 0;
         for line in contents.as_str().lines() {
@@ -209,7 +238,7 @@ pub fn run(opts: &GlobalOptions) -> i32 {
 /// Write mounts to JSON writer (for snapshot).
 #[cfg(feature = "snapshot")]
 pub fn write_snapshot(w: &mut StreamingJsonWriter, verbose: bool) {
-    let contents: StackString<8192> = match io::read_file_stack(MOUNTS_PATH) {
+    let contents: StackString<32768> = match io::read_file_stack(MOUNTS_PATH) {
         Some(c) => c,
         None => return,
     };

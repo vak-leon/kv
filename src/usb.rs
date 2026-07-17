@@ -10,8 +10,6 @@
 //! Note: USB device strings (manufacturer, product) might require special
 //! permissions to read on some systems. We gracefully handle missing strings.
 
-#![allow(dead_code)]
-
 use crate::cli::GlobalOptions;
 use crate::fields::usb as f;
 use crate::filter::{matches_any, opt_str};
@@ -252,10 +250,6 @@ pub fn run(opts: &GlobalOptions) -> i32 {
         w.end_field_array();
         w.end_object();
         w.finish();
-
-        if count == 0 && filter.is_some() {
-            // Empty filtered result is fine
-        }
     } else {
         let mut count = 0;
         io::for_each_dir_entry(USB_SYSFS_PATH, |name| {

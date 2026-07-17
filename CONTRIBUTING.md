@@ -122,15 +122,20 @@ cargo build
 
 ### Testing
 
-The project uses shell-based integration tests (no_std is incompatible with Rust's test harness):
+Two layers:
 
 ```bash
-./build.sh              # Build release binary
-./scripts/test.sh       # Run integration tests (21 tests)
+./scripts/unit-test.sh  # Unit tests (parsers, formatters) on the host
+./build.sh              # Build release binary (static non-PIE, smallest)
+./build.sh --pie        # Static-PIE variant (ASLR, not on x86/mipsel yet)
+./scripts/test.sh       # Integration tests against the built binary
 ./scripts/test-cross.sh # Build all targets, QEMU smoke tests
 ```
 
-Integration tests verify all subcommands, JSON output, filters, verbose mode, and human-readable sizes against real /sys and /proc.
+Unit tests live in the library modules (`cargo test` via the wrapper - the
+wrapper clears RUSTFLAGS because the release link flags would break the std
+test harness). Integration tests verify all subcommands, JSON output,
+filters, verbose mode, and human-readable sizes against real /sys and /proc.
 
 > [!TIP]
 > Chuck Norris tests in production.
@@ -231,7 +236,7 @@ kv runs on untrusted systems where inputs cannot be trusted. All code must:
 5. **Validate paths** - Sanitize user-provided paths before joining with base paths
 6. **Test edge cases** - Empty inputs, very long inputs, malformed data
 
-See README.md "Security & Defensive Programming" section for what's already implemented.
+See the "Security" section in README.md for what's already implemented.
 
 ### Commit Guidelines
 
@@ -244,7 +249,7 @@ See README.md "Security & Defensive Programming" section for what's already impl
 1. **Fork** the repository (click "Fork" at top right of the GitHub page)
 2. **Clone** your fork: `git clone https://github.com/walruscraft/kv.git`
 3. **Create a branch**: `git checkout -b my-feature`
-4. **Make your changes** and test them: `cargo test`
+4. **Make your changes** and test them: `./scripts/unit-test.sh && ./build.sh && ./scripts/test.sh`
 5. **Commit**: `git add . && git commit -m "Description of changes"`
 6. **Push**: `git push origin my-feature`
 7. **Open a PR**: Go to your fork on GitHub, click "Contribute" -> "Open pull request"

@@ -7,8 +7,6 @@
 //! - Text: `STATE=up`
 //! - JSON: `"state": "up"`
 
-#![allow(dead_code)]
-
 /// Network interface fields (kv net)
 pub mod net {
     pub const NAME: &str = "name";

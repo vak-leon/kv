@@ -9,8 +9,6 @@
 //! We do our best to provide useful information regardless of architecture,
 //! but some fields may be missing on some platforms. That's life in embedded.
 
-#![allow(dead_code)]
-
 use crate::cli::GlobalOptions;
 use crate::fields::cpu as f;
 use crate::io;
@@ -94,7 +92,7 @@ pub struct CpuInfo {
 impl CpuInfo {
     /// Read CPU information from /proc/cpuinfo.
     pub fn read() -> Option<Self> {
-        let contents: StackString<8192> = io::read_file_stack(CPUINFO_PATH)?;
+        let contents: StackString<65536> = io::read_file_stack(CPUINFO_PATH)?;
         Some(Self::parse(contents.as_str()))
     }
 
@@ -374,4 +372,48 @@ pub fn run(opts: &GlobalOptions) -> i32 {
     }
 
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_counts_all_processor_blocks() {
+        // Regression guard for the 4 KiB read truncation: a 22-thread x86
+        // cpuinfo is ~25 KiB and must still count every block.
+        let mut content = std::string::String::new();
+        for i in 0..22 {
+            content.push_str(&std::format!(
+                "processor\t: {}\nvendor_id\t: GenuineIntel\nmodel name\t: Test CPU\n\n",
+                i
+            ));
+        }
+        let info = CpuInfo::parse(&content);
+        assert_eq!(info.logical_cpus, 22);
+    }
+
+    #[test]
+    fn parse_sockets_and_cores() {
+        let mut content = std::string::String::new();
+        for i in 0..4 {
+            content.push_str(&std::format!(
+                "processor\t: {}\nphysical id\t: 0\ncore id\t: {}\n\n",
+                i,
+                i / 2
+            ));
+        }
+        let info = CpuInfo::parse(&content);
+        assert_eq!(info.logical_cpus, 4);
+        assert_eq!(info.sockets, Some(1));
+        assert_eq!(info.cores_per_socket, Some(2));
+    }
+
+    #[test]
+    fn parse_arm_hardware_line() {
+        let content = "processor\t: 0\nCPU implementer\t: 0x41\n\nHardware\t: BCM2835\n";
+        let info = CpuInfo::parse(content);
+        assert_eq!(info.logical_cpus, 1);
+        assert_eq!(info.model_name.as_deref(), Some("BCM2835"));
+    }
 }

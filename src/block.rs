@@ -7,8 +7,6 @@
 //! We handle the somewhat odd sysfs layout where partitions can appear
 //! either as subdirectories of /sys/block/<disk>/ or as separate entries.
 
-#![allow(dead_code)]
-
 use crate::cli::GlobalOptions;
 use crate::fields::block as f;
 use crate::filter::{matches_any, opt_str};
@@ -85,7 +83,7 @@ impl MountpointMap {
     fn from_mounts() -> Self {
         let mut map = Self::new();
 
-        let contents: Option<StackString<8192>> = io::read_file_stack(MOUNTS_PATH);
+        let contents: Option<StackString<32768>> = io::read_file_stack(MOUNTS_PATH);
         let Some(contents) = contents else {
             return map;
         };
@@ -420,10 +418,6 @@ pub fn run(opts: &GlobalOptions) -> i32 {
         w.end_field_array();
         w.end_object();
         w.finish();
-
-        if count == 0 && filter.is_some() {
-            // Empty filtered result is fine
-        }
     } else {
         let mut count = 0;
         io::for_each_dir_entry(BLOCK_SYSFS_PATH, |disk_name| {

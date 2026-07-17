@@ -6,8 +6,6 @@
 //! IP addresses are parsed from /proc/net/fib_trie (IPv4) and /proc/net/if_inet6 (IPv6).
 //! Wireless signal quality comes from /proc/net/wireless.
 
-#![allow(dead_code)]
-
 use crate::cli::GlobalOptions;
 use crate::fields::net as f;
 use crate::filter::{matches_any, opt_str};
@@ -611,7 +609,7 @@ fn parse_proc_net_wireless(wireless_map: &mut WirelessMap) {
 
 /// Parse /proc/net/if_inet6 for IPv6 addresses.
 fn parse_proc_net_if_inet6(ipv6_map: &mut Ipv6Map) {
-    let content: Option<StackString<8192>> = io::read_file_stack(PROC_NET_IF_INET6);
+    let content: Option<StackString<32768>> = io::read_file_stack(PROC_NET_IF_INET6);
     let Some(content) = content else { return };
 
     for line in content.as_str().lines() {
@@ -655,7 +653,7 @@ fn hex_to_ipv6(hex: &str) -> Option<StackString<64>> {
 
 /// Parse /proc/net/route to build route table.
 fn parse_proc_net_route(routes: &mut RouteTable) {
-    let content: Option<StackString<8192>> = io::read_file_stack(PROC_NET_ROUTE);
+    let content: Option<StackString<32768>> = io::read_file_stack(PROC_NET_ROUTE);
     let Some(content) = content else { return };
 
     // Skip header line
@@ -801,10 +799,6 @@ pub fn run(opts: &GlobalOptions) -> i32 {
         w.end_field_array();
         w.end_object();
         w.finish();
-
-        if count == 0 && filter.is_some() {
-            // Empty filtered result is fine
-        }
     } else {
         let mut count = 0;
         io::for_each_dir_entry(NET_SYSFS_PATH, |name| {

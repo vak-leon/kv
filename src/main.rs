@@ -1,7 +1,8 @@
 //! kv - Kernel View
 //!
-//! A tiny, dependency-free system inspector for embedded Linux.
-//! See README.md for full documentation.
+//! Binary entry point: origin-based startup, panic handler, and subcommand
+//! dispatch. All real logic lives in the library (lib.rs) so it can be
+//! unit-tested on the host. See README.md for full documentation.
 
 #![no_std]
 #![no_main]
@@ -9,60 +10,8 @@
 // Force link origin to get startup code and mem functions
 extern crate origin;
 
-mod cli;
-#[macro_use]
-mod debug;
-mod fields;
-mod filter;
-mod io;
-mod json;
-mod print;
-mod stack;
-
-// Subcommand modules - conditionally compiled based on features.
-// For now, we only enable mem for the no_std conversion.
-
-#[cfg(feature = "mem")]
-mod mem;
-
-// Stub modules for disabled features
-#[cfg(feature = "pci")]
-mod pci;
-#[cfg(feature = "usb")]
-mod usb;
-#[cfg(feature = "block")]
-mod block;
-#[cfg(feature = "net")]
-mod net;
-#[cfg(feature = "cpu")]
-mod cpu;
-#[cfg(feature = "mounts")]
-mod mounts;
-#[cfg(feature = "thermal")]
-mod thermal;
-#[cfg(feature = "power")]
-mod power;
-#[cfg(feature = "snapshot")]
-mod snapshot;
-
-#[cfg(all(
-    feature = "dt",
-    any(target_arch = "arm", target_arch = "aarch64", target_arch = "riscv64", target_arch = "powerpc64", target_arch = "mips")
-))]
-mod dt;
-
-#[cfg(all(
-    feature = "dt",
-    not(any(target_arch = "arm", target_arch = "aarch64", target_arch = "riscv64", target_arch = "powerpc64", target_arch = "mips"))
-))]
-mod dt {
-    pub fn run(_opts: &crate::cli::GlobalOptions, _args: &crate::cli::ExtraArgs) -> i32 {
-        crate::print::println("dt: devicetree not typically available on this architecture");
-        0
-    }
-}
-
-use cli::{Invocation, print_help, print_version, print_subcommand_help};
+use kv::cli::{Invocation, print_help, print_version, print_subcommand_help};
+use kv::{debug, print};
 
 /// Panic handler - minimal, just exits
 #[panic_handler]
@@ -71,23 +20,28 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     rustix::runtime::exit_group(101)
 }
 
+/// Dev builds (`cargo build`) link the prebuilt libcore, whose debug data
+/// references this unwinding symbol. It can never be called with
+/// panic=abort. Release builds rebuild core via build-std and drop it.
+#[unsafe(no_mangle)]
+extern "C" fn rust_eh_personality() {}
+
 /// Entry point called by origin.
 /// Origin calls this after performing program initialization.
 #[unsafe(no_mangle)]
-unsafe fn origin_main(argc: usize, argv: *mut *mut u8, _envp: *mut *mut u8) -> i32 {
-    // SAFETY: origin guarantees argc/argv are valid
+unsafe fn origin_main(argc: usize, argv: *mut *mut u8, envp: *mut *mut u8) -> i32 {
+    // SAFETY: origin guarantees argc/argv/envp are valid
     let inv = unsafe { Invocation::parse_from_raw(argc as i32, argv as *const *const u8) };
-    run(inv)
+    let env_debug = unsafe { kv::cli::env_has_kv_debug(envp as *const *const u8) };
+    run(inv, env_debug)
 }
 
-fn run(inv: Invocation) -> i32 {
+fn run(inv: Invocation, env_debug: bool) -> i32 {
+    debug::set_enabled(inv.options.debug || env_debug);
 
-    // Initialize debug mode from CLI flag (env var is checked during parse)
-    debug::set_enabled(inv.options.debug);
-
-    if inv.options.debug {
-        dbg_print!("kv {} starting", env!("CARGO_PKG_VERSION"));
-        dbg_print!("subcommand: {:?}", inv.subcommand);
+    kv::dbg_print!("kv ", env!("CARGO_PKG_VERSION"), " starting");
+    if let Some(ref subcommand) = inv.subcommand {
+        kv::dbg_print!("subcommand: ", subcommand.as_str());
     }
 
     // Handle version request
@@ -117,37 +71,37 @@ fn run(inv: Invocation) -> i32 {
     // Each match arm is conditionally compiled - if feature is off, it's not here.
     match subcommand.as_str() {
         #[cfg(feature = "pci")]
-        "pci" => pci::run(&inv.options),
+        "pci" => kv::pci::run(&inv.options),
 
         #[cfg(feature = "usb")]
-        "usb" => usb::run(&inv.options),
+        "usb" => kv::usb::run(&inv.options),
 
         #[cfg(feature = "block")]
-        "block" => block::run(&inv.options),
+        "block" => kv::block::run(&inv.options),
 
         #[cfg(feature = "net")]
-        "net" => net::run(&inv.options),
+        "net" => kv::net::run(&inv.options),
 
         #[cfg(feature = "cpu")]
-        "cpu" => cpu::run(&inv.options),
+        "cpu" => kv::cpu::run(&inv.options),
 
         #[cfg(feature = "mem")]
-        "mem" => mem::run(&inv.options),
+        "mem" => kv::mem::run(&inv.options),
 
         #[cfg(feature = "mounts")]
-        "mounts" => mounts::run(&inv.options),
+        "mounts" => kv::mounts::run(&inv.options),
 
         #[cfg(feature = "thermal")]
-        "thermal" => thermal::run(&inv.options),
+        "thermal" => kv::thermal::run(&inv.options),
 
         #[cfg(feature = "power")]
-        "power" => power::run(&inv.options),
+        "power" => kv::power::run(&inv.options),
 
         #[cfg(feature = "dt")]
-        "dt" => dt::run(&inv.options, &inv.args),
+        "dt" => kv::dt::run(&inv.options, &inv.args),
 
         #[cfg(feature = "snapshot")]
-        "snapshot" => snapshot::run(&inv.options),
+        "snapshot" => kv::snapshot::run(&inv.options),
 
         _unknown => {
             print::eprintln("Error: unknown subcommand");

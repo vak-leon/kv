@@ -207,18 +207,22 @@ run_remote() {
     local target=""
     local dt_feature=""
     case "$arch" in
-        riscv64)      target="riscv64gc-unknown-linux-musl"; dt_feature="--features dt" ;;
-        arm64|aarch64) target="aarch64-unknown-linux-musl"; dt_feature="--features dt" ;;
-        arm)          target="arm-unknown-linux-musleabihf"; dt_feature="--features dt" ;;
-        x86_64)       target="x86_64-unknown-linux-musl" ;;
+        riscv64)      target="riscv64gc-unknown-linux-gnu"; dt_feature="--features dt" ;;
+        arm64|aarch64) target="aarch64-unknown-linux-gnu"; dt_feature="--features dt" ;;
+        arm)          target="arm-unknown-linux-gnueabihf"; dt_feature="--features dt" ;;
+        ppc64|ppc64le) target="powerpc64le-unknown-linux-gnu"; dt_feature="--features dt" ;;
+        mips|mipsel)  target="mipsel-unknown-linux-gnu"; dt_feature="--features dt" ;;
+        x86_64)       target="x86_64-unknown-linux-gnu" ;;
+        x86)          target="i686-unknown-linux-gnu" ;;
         *)
-            log_error "Unknown arch: $arch (use: riscv64, arm64, arm, x86_64)"
+            log_error "Unknown arch: $arch (use: x86_64, x86, arm64, arm, riscv64, ppc64, mips)"
             exit 1
             ;;
     esac
 
     log_info "Building for $target..."
-    cargo build --release --target "$target" $dt_feature 2>&1
+    cargo build --release -Zbuild-std=core -Zbuild-std-features=optimize_for_size \
+        --target "$target" $dt_feature 2>&1
 
     local binary="target/$target/release/kv"
     [ ! -f "$binary" ] && { log_error "Binary not found: $binary"; exit 1; }

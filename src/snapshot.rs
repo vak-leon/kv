@@ -11,9 +11,6 @@
 //! individual subcommands instead.
 //!
 //! Currently only includes subcommands that have been converted to no_std.
-//! More sections will be added as subcommands are converted.
-
-#![allow(dead_code)]
 
 use crate::cli::GlobalOptions;
 use crate::io::KbToBytes;

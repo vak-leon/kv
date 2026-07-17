@@ -9,8 +9,6 @@
 //!
 //! Uses itoa for integer formatting to avoid core::fmt bloat.
 
-#![allow(dead_code)]
-
 use crate::io::HexNibble;
 use crate::print;
 

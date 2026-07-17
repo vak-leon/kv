@@ -10,15 +10,13 @@
 //! - USB: USB power delivery sources
 //! - UPS: Uninterruptible power supplies
 
-#![allow(dead_code)]
-
 use crate::cli::GlobalOptions;
 use crate::fields::power as f;
 use crate::filter::{matches_any, opt_str};
 use crate::io;
 use crate::json::{begin_kv_output_streaming, StreamingJsonWriter};
 use crate::print::{self, TextWriter};
-use crate::stack::StackString;
+use crate::stack::{push_fixed_point, StackString};
 
 const POWER_SUPPLY_PATH: &str = "/sys/class/power_supply";
 
@@ -396,137 +394,55 @@ fn parse_usb_type(s: &str) -> StackString<32> {
 
 /// Format microvolts as human-readable (e.g., "12.5V").
 fn format_uv_human(s: &mut StackString<16>, uv: i64) {
-    // Convert to volts with 1 decimal place
-    let mv = uv / 1000;
-    let v_x10 = mv / 100;
-    let v_whole = v_x10 / 10;
-    let v_frac = (v_x10 % 10).abs();
-    let mut buf = itoa::Buffer::new();
-    s.push_str(buf.format(v_whole));
-    s.push('.');
-    s.push_str(buf.format(v_frac));
+    push_fixed_point(s, uv / 100_000, 1);
     s.push('V');
 }
 
 /// Format microvolts as decimal volts (e.g., "12.50").
 fn format_uv_decimal(s: &mut StackString<16>, uv: i64) {
-    // 2 decimal places
-    let mv = uv / 1000;
-    let v_x100 = mv / 10;
-    let v_whole = v_x100 / 100;
-    let v_frac = (v_x100 % 100).abs();
-    let mut buf = itoa::Buffer::new();
-    s.push_str(buf.format(v_whole));
-    s.push('.');
-    if v_frac < 10 {
-        s.push('0');
-    }
-    s.push_str(buf.format(v_frac));
+    push_fixed_point(s, uv / 10_000, 2);
 }
 
 /// Format microamps as human-readable (e.g., "1.5A" or "500mA").
 fn format_ua_human(s: &mut StackString<16>, ua: i64) {
-    let abs_ua = ua.abs();
-    if ua < 0 {
-        s.push('-');
-    }
-    if abs_ua >= 1_000_000 {
-        // >= 1A, show as X.XA
-        let ma = abs_ua / 1000;
-        let a_x10 = ma / 100;
-        let a_whole = a_x10 / 10;
-        let a_frac = a_x10 % 10;
-        let mut buf = itoa::Buffer::new();
-        s.push_str(buf.format(a_whole));
-        s.push('.');
-        s.push_str(buf.format(a_frac));
+    if ua.unsigned_abs() >= 1_000_000 {
+        push_fixed_point(s, ua / 100_000, 1);
         s.push('A');
     } else {
-        // < 1A, show as XmA
-        let ma = abs_ua / 1000;
-        let mut buf = itoa::Buffer::new();
-        s.push_str(buf.format(ma));
+        push_fixed_point(s, ua / 1000, 0);
         s.push_str("mA");
     }
 }
 
 /// Format microamps as decimal amps (e.g., "1.500").
 fn format_ua_decimal(s: &mut StackString<16>, ua: i64) {
-    // 3 decimal places
-    let ma = ua / 1000;
-    let a_x1000 = ma;
-    let a_whole = a_x1000 / 1000;
-    let a_frac = (a_x1000 % 1000).abs();
-    let mut buf = itoa::Buffer::new();
-    s.push_str(buf.format(a_whole));
-    s.push('.');
-    if a_frac < 100 {
-        s.push('0');
-    }
-    if a_frac < 10 {
-        s.push('0');
-    }
-    s.push_str(buf.format(a_frac));
+    push_fixed_point(s, ua / 1000, 3);
 }
 
 /// Format microwatts as human-readable (e.g., "18.8W").
 fn format_uw_human(s: &mut StackString<16>, uw: i64) {
-    // Convert to watts with 1 decimal place
-    let mw = uw / 1000;
-    let w_x10 = mw / 100;
-    let w_whole = w_x10 / 10;
-    let w_frac = (w_x10 % 10).abs();
-    let mut buf = itoa::Buffer::new();
-    s.push_str(buf.format(w_whole));
-    s.push('.');
-    s.push_str(buf.format(w_frac));
+    push_fixed_point(s, uw / 100_000, 1);
     s.push('W');
 }
 
 /// Format microwatts as decimal watts (e.g., "18.75").
 fn format_uw_decimal(s: &mut StackString<16>, uw: i64) {
-    // 2 decimal places
-    let mw = uw / 1000;
-    let w_x100 = mw / 10;
-    let w_whole = w_x100 / 100;
-    let w_frac = (w_x100 % 100).abs();
-    let mut buf = itoa::Buffer::new();
-    s.push_str(buf.format(w_whole));
-    s.push('.');
-    if w_frac < 10 {
-        s.push('0');
-    }
-    s.push_str(buf.format(w_frac));
+    push_fixed_point(s, uw / 10_000, 2);
 }
 
 /// Format energy pair as human-readable (e.g., "45.0Wh/50.0Wh").
 fn format_energy_pair(s: &mut StackString<32>, now_uwh: i64, full_uwh: i64) {
-    // Convert to Wh with 1 decimal
-    let now_wh_x10 = now_uwh / 100_000;
-    let full_wh_x10 = full_uwh / 100_000;
-    let mut buf = itoa::Buffer::new();
-    s.push_str(buf.format(now_wh_x10 / 10));
-    s.push('.');
-    s.push_str(buf.format((now_wh_x10 % 10).abs()));
+    push_fixed_point(s, now_uwh / 100_000, 1);
     s.push_str("Wh/");
-    s.push_str(buf.format(full_wh_x10 / 10));
-    s.push('.');
-    s.push_str(buf.format((full_wh_x10 % 10).abs()));
+    push_fixed_point(s, full_uwh / 100_000, 1);
     s.push_str("Wh");
 }
 
 /// Format energy pair as decimal Wh (e.g., "45.0/50.0").
 fn format_uwh_pair(s: &mut StackString<32>, now_uwh: i64, full_uwh: i64) {
-    let now_wh_x10 = now_uwh / 100_000;
-    let full_wh_x10 = full_uwh / 100_000;
-    let mut buf = itoa::Buffer::new();
-    s.push_str(buf.format(now_wh_x10 / 10));
-    s.push('.');
-    s.push_str(buf.format((now_wh_x10 % 10).abs()));
+    push_fixed_point(s, now_uwh / 100_000, 1);
     s.push('/');
-    s.push_str(buf.format(full_wh_x10 / 10));
-    s.push('.');
-    s.push_str(buf.format((full_wh_x10 % 10).abs()));
+    push_fixed_point(s, full_uwh / 100_000, 1);
 }
 
 /// Format charge pair as human-readable (e.g., "4500mAh/5000mAh").
@@ -588,10 +504,6 @@ pub fn run(opts: &GlobalOptions) -> i32 {
         w.end_field_array();
         w.end_object();
         w.finish();
-
-        if count == 0 && filter.is_some() {
-            // Empty filtered result is fine
-        }
     } else {
         let mut count = 0;
         io::for_each_dir_entry(POWER_SUPPLY_PATH, |name| {
@@ -642,4 +554,42 @@ pub fn write_snapshot(w: &mut StreamingJsonWriter, verbose: bool) {
         }
     });
     w.end_array();
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    fn fmt16(f: impl Fn(&mut StackString<16>)) -> std::string::String {
+        let mut s: StackString<16> = StackString::new();
+        f(&mut s);
+        s.as_str().to_string()
+    }
+
+    #[test]
+    fn uv_decimal_positive() {
+        assert_eq!(fmt16(|s| format_uv_decimal(s, 12_500_000)), "12.50");
+    }
+
+    #[test]
+    fn uv_decimal_keeps_sign_when_below_one() {
+        // A discharging reading of -0.8 must not print as 0.80
+        assert_eq!(fmt16(|s| format_uv_decimal(s, -800_000)), "-0.80");
+    }
+
+    #[test]
+    fn ua_decimal_keeps_sign_when_below_one() {
+        assert_eq!(fmt16(|s| format_ua_decimal(s, -800_000)), "-0.800");
+    }
+
+    #[test]
+    fn uw_decimal_keeps_sign_when_below_one() {
+        assert_eq!(fmt16(|s| format_uw_decimal(s, -500_000)), "-0.50");
+    }
+
+    #[test]
+    fn ua_human_keeps_sign() {
+        assert_eq!(fmt16(|s| format_ua_human(s, -800_000)), "-800mA");
+        assert_eq!(fmt16(|s| format_ua_human(s, 1_500_000)), "1.5A");
+    }
 }

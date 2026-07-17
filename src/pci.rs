@@ -8,8 +8,6 @@
 //! so you'll see "0x10de" instead of "NVIDIA Corporation". The hex IDs are
 //! actually more useful for scripting anyway.
 
-#![allow(dead_code)]
-
 use crate::cli::GlobalOptions;
 use crate::fields::pci as f;
 use crate::filter::{matches_any, opt_str};
@@ -191,7 +189,7 @@ impl PciDevice {
                 w.field_str(f::REVISION, io::format_hex_u8(v).as_str());
             }
             if let Some(v) = self.numa_node {
-                w.field_u64(f::NUMA_NODE, v as u64);
+                w.field_i64(f::NUMA_NODE, v as i64);
             }
             if let Some(v) = self.iommu_group {
                 w.field_u64(f::IOMMU_GROUP, v as u64);
@@ -245,10 +243,6 @@ pub fn run(opts: &GlobalOptions) -> i32 {
         w.end_field_array();
         w.end_object();
         w.finish();
-
-        if count == 0 && filter.is_some() {
-            // Empty filtered result is fine
-        }
     } else {
         let mut count = 0;
         io::for_each_dir_entry(PCI_SYSFS_PATH, |bdf| {

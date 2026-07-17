@@ -12,7 +12,6 @@
 //! - Inspect a specific node path
 
 #![cfg(any(target_arch = "arm", target_arch = "aarch64", target_arch = "riscv64", target_arch = "powerpc64", target_arch = "mips"))]
-#![allow(dead_code)]
 
 use crate::cli::{ExtraArgs, GlobalOptions};
 use crate::fields::dt as f;
@@ -29,7 +28,7 @@ const DT_BASE_PATH: &str = "/sys/firmware/devicetree/base";
 // =============================================================================
 
 /// Maximum recursion depth for traversing devicetree (defense against stack overflow).
-/// Real devicetrees rarely exceed 10-15 levels; 64 is generous.
+/// Real devicetrees rarely exceed 10-15 levels, so 64 is generous.
 const MAX_RECURSION_DEPTH: usize = 64;
 
 /// Maximum number of nodes to process (defense against symlink loops or huge trees).
@@ -114,11 +113,14 @@ fn read_property(path: &str) -> Option<StackString<512>> {
         }
     }
 
-    // Read the raw bytes
-    let data: Option<StackString<4096>> = io::read_file_stack(path);
-    let data = data?;
-    let bytes = data.as_str().as_bytes();
+    // Read the raw bytes - properties like `reg` are binary, so no UTF-8
+    // filtering or trimming here, since that would corrupt them (or drop them
+    // before the hex fallback below ever ran).
+    let mut buf = [0u8; 4096];
+    let len = io::read_file_raw(path, &mut buf)?;
+    let bytes = &buf[..len];
 
+    // An empty property is a boolean flag (present = true)
     if bytes.is_empty() {
         return Some(StackString::new());
     }
@@ -163,6 +165,43 @@ fn read_property(path: &str) -> Option<StackString<512>> {
         result.push_str("...");
     }
     Some(result)
+}
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+
+    fn tmp_prop(name: &str, content: &[u8]) -> std::string::String {
+        let mut p = std::env::temp_dir();
+        p.push(std::format!("kv-dt-test-{}-{}", std::process::id(), name));
+        std::fs::write(&p, content).unwrap();
+        p.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn string_property_joins_null_separated_parts() {
+        let p = tmp_prop("compat", b"brcm,bcm2711\0raspberrypi,4-model-b\0");
+        let v = read_property(&p);
+        std::fs::remove_file(&p).unwrap();
+        assert_eq!(v.as_deref(), Some("brcm,bcm2711, raspberrypi,4-model-b"));
+    }
+
+    #[test]
+    fn binary_property_falls_back_to_hex() {
+        // A typical `reg` cell: high bytes make it non-UTF-8
+        let p = tmp_prop("reg", &[0xfe, 0x20, 0x10, 0x00]);
+        let v = read_property(&p);
+        std::fs::remove_file(&p).unwrap();
+        assert_eq!(v.as_deref(), Some("fe 20 10 00"));
+    }
+
+    #[test]
+    fn empty_property_is_a_boolean_flag() {
+        let p = tmp_prop("flag", b"");
+        let v = read_property(&p);
+        std::fs::remove_file(&p).unwrap();
+        assert_eq!(v.as_deref(), Some(""));
+    }
 }
 
 /// Sanitize a relative path, rejecting any path traversal attempts.

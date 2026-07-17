@@ -4,7 +4,9 @@
 
 set -e
 
-KV="${KV:-./target/x86_64-unknown-linux-gnu/release/kv}"
+# Default to the host-target release binary (what ./build.sh produces);
+# override with KV=path/to/kv for cross binaries.
+KV="${KV:-./target/$(rustc -vV | sed -n 's/^host: //p')/release/kv}"
 
 # Colors for output (if terminal supports it)
 if [ -t 1 ]; then
@@ -192,6 +194,62 @@ if [ "$CPU_VERBOSE" -gt "$CPU_NORMAL" ]; then
     pass "verbose -v adds more fields"
 else
     fail "verbose -v adds more fields"
+fi
+
+# Test: cpu count matches the system (guards against truncated /proc/cpuinfo)
+NPROC=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN)
+if $KV cpu | grep -q "LOGICAL_CPUS=$NPROC "; then
+    pass "cpu LOGICAL_CPUS matches nproc ($NPROC)"
+else
+    fail "cpu LOGICAL_CPUS matches nproc ($NPROC, got: $($KV cpu | grep -o 'LOGICAL_CPUS=[0-9]*'))"
+fi
+
+# Test: mounts shows every mount (guards against truncated /proc/self/mounts)
+MOUNT_LINES=$(wc -l < /proc/self/mounts)
+KV_MOUNTS=$($KV mounts | grep -c "TARGET=" || true)
+if [ "$KV_MOUNTS" -eq "$MOUNT_LINES" ]; then
+    pass "mounts shows all $MOUNT_LINES mounts"
+else
+    fail "mounts shows all mounts (kernel has $MOUNT_LINES, kv shows $KV_MOUNTS)"
+fi
+
+# Test: pci -v resolves driver symlinks (only if the system has any)
+if ls /sys/bus/pci/devices/*/driver >/dev/null 2>&1; then
+    if $KV pci -v | grep -q "DRIVER="; then
+        pass "pci -v shows DRIVER for bound devices"
+    else
+        fail "pci -v shows DRIVER for bound devices"
+    fi
+else
+    pass "pci -v shows DRIVER (skipped: no bound PCI drivers)"
+fi
+
+# Test: JSON never renders numa_node -1 as a huge unsigned value
+if $KV pci -jv | grep -q "18446744073709551615"; then
+    fail "pci -jv renders numa_node -1 correctly"
+else
+    pass "pci -jv renders numa_node -1 correctly"
+fi
+
+# Test: -D enables debug output on stderr
+if $KV mem -D 2>&1 >/dev/null | grep -q "\[DEBUG\]"; then
+    pass "-D emits debug output on stderr"
+else
+    fail "-D emits debug output on stderr"
+fi
+
+# Test: KV_DEBUG=1 works like -D
+if KV_DEBUG=1 $KV mem 2>&1 >/dev/null | grep -q "\[DEBUG\]"; then
+    pass "KV_DEBUG=1 emits debug output"
+else
+    fail "KV_DEBUG=1 emits debug output"
+fi
+
+# Test: debug output does not leak into stdout (would corrupt JSON consumers)
+if $KV mem -Dj 2>/dev/null | grep -q "\[DEBUG\]"; then
+    fail "debug output stays out of stdout"
+else
+    pass "debug output stays out of stdout"
 fi
 
 echo "---"

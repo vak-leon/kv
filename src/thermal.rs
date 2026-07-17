@@ -14,15 +14,13 @@
 //! Temperature is reported in millidegrees Celsius - divide by 1000
 //! for the human-readable value. We keep it in millidegrees for precision.
 
-#![allow(dead_code)]
-
 use crate::cli::GlobalOptions;
 use crate::fields::thermal as f;
 use crate::filter::{matches_any, opt_str};
 use crate::io;
 use crate::json::{begin_kv_output_streaming, StreamingJsonWriter};
 use crate::print::{self, TextWriter};
-use crate::stack::StackString;
+use crate::stack::{push_fixed_point, StackString};
 
 const THERMAL_PATH: &str = "/sys/class/thermal";
 const HWMON_PATH: &str = "/sys/class/hwmon";
@@ -320,12 +318,7 @@ fn find_critical_trip_point(zone_path: &str) -> Option<i64> {
 /// Format temperature for text output.
 fn format_temp_text(w: &mut TextWriter, name: &str, temp_x10: i32, human: bool) {
     let mut s: StackString<16> = StackString::new();
-    let mut buf = itoa::Buffer::new();
-    let whole = temp_x10 / 10;
-    let frac = (temp_x10 % 10).abs();
-    s.push_str(buf.format(whole));
-    s.push('.');
-    s.push_str(buf.format(frac));
+    push_fixed_point(&mut s, temp_x10 as i64, 1);
     if human {
         s.push('C');
     }
@@ -362,12 +355,7 @@ fn print_trip_points_text(w: &mut TextWriter, zone_path: &str, human: bool) {
             trips.push_str(t.as_str());
             trips.push(':');
 
-            let temp_x10 = (temp_mc / 100) as i32;
-            let whole = temp_x10 / 10;
-            let frac = (temp_x10 % 10).abs();
-            trips.push_str(buf.format(whole));
-            trips.push('.');
-            trips.push_str(buf.format(frac));
+            push_fixed_point(&mut trips, temp_mc / 100, 1);
             if human {
                 trips.push('C');
             }
@@ -590,10 +578,6 @@ pub fn run(opts: &GlobalOptions) -> i32 {
 
         w.end_object();
         w.finish();
-
-        if count == 0 && filter.is_some() {
-            // Empty filtered result is fine
-        }
     } else {
         let mut count = 0;
 

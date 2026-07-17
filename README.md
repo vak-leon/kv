@@ -1,6 +1,6 @@
 # kv - Kernel View
 
-[![Rust 2024](https://img.shields.io/badge/Rust_2024-≥1.85-black?style=for-the-badge&logo=rust&logoColor=white)](https://doc.rust-lang.org/edition-guide/rust-2024/)
+[![Rust 2024](https://img.shields.io/badge/Rust_2024-%3E%3D1.88-black?style=for-the-badge&logo=rust&logoColor=white)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 
 A tiny, dependency-free system inspector for Linux.
 
@@ -121,11 +121,20 @@ Requires **Rust nightly** (uses build-std for no_std) and Rust 2024 edition.
 > See [CONTRIBUTING.md](CONTRIBUTING.md) for full cross-compilation setup.
 
 ```bash
-# Debug build
+# Debug build (host target)
 cargo build
 
-# Release build (static, ~113 KB stripped)
-cargo build --release
+# Size-optimized release build (static, ~105 KB on x86_64)
+./build.sh
+
+# Static-PIE build (ASLR-capable, a bit larger)
+./build.sh --pie
+
+# Unit tests (host, needs no cross setup)
+./scripts/unit-test.sh
+
+# Integration tests against the built binary
+./scripts/test.sh
 ```
 
 ### Cross-Compilation
@@ -189,12 +198,12 @@ $ kv pci
 BDF=0000:01:00.0 VENDOR_ID=0x10de DEVICE_ID=0x1b80 CLASS=0x030000 DRIVER=nouveau
 
 $ kv net
-NAME=eth0 MAC=dc:a6:32:56:76:50 MTU=1500 STATE=up SPEED_MBPS=1000 IP=192.168.1.100
+NAME=eth0 MAC=dc:a6:32:56:76:50 MTU=1500 STATE=up SPEED=1000 IP=192.168.1.100
 NAME=wlan0 MAC=dc:a6:32:56:76:51 MTU=1500 STATE=up IP=192.168.1.101 SIGNAL=-52dBm
 
 $ kv thermal -h
-SENSOR=cpu-thermal TEMP=44.5°C
-SENSOR=gpu-thermal TEMP=41.2°C
+SENSOR=cpu-thermal TEMP=44.5C
+SENSOR=gpu-thermal TEMP=41.2C
 
 $ kv block -h
 NAME=mmcblk0 TYPE=disk SIZE=16G MODEL="SC16G"
@@ -205,7 +214,7 @@ NAME=mmcblk0p2 TYPE=part SIZE=15G PARENT=mmcblk0 MOUNTPOINT="/"
 ## Design Philosophy
 
 - **Minimal dependencies.** no_std with direct syscalls, no libc. Just 3 crates: origin (startup), rustix (syscalls), itoa (number formatting). Zero heap allocation.
-- **Single static binary.** ~113 KB stripped, copy it anywhere, it just works.
+- **Single static binary.** ~105 KB on x86_64, copy it anywhere, it just works.
 - **Read-only.** We observe, we don't touch.
 - **Graceful degradation.** Missing /sys/bus/pci? We say so and move on.
 - **Stable output.** Scripts can depend on the format.
@@ -237,7 +246,9 @@ step-by-step instructions on how to submit test results or report issues.
 | powerpc64le-unknown-linux-gnu | `cargo ppc64` | 64-bit PowerPC (LE) |
 | mipsel-unknown-linux-gnu | `cargo mips` | 32-bit MIPS (LE) |
 
-All targets produce static binaries (~113 KB stripped) using no_std with build-std. Zero heap allocation.
+All targets produce static binaries (~105 KB on x86_64, up to ~130 KB on
+architectures with 64 KiB page alignment) using no_std with build-std.
+Zero heap allocation.
 
 > **Note on big-endian PPC64/MIPS:** Big-endian variants are blocked upstream
 > by rustix (which has no linux_raw backend for these ABIs). Only little-endian
@@ -271,6 +282,7 @@ kv is designed for untrusted environments. See the security table below.
 | Safe parsing | Returns `None` on overflow instead of panicking |
 | Read-only | Only reads from /sys and /proc, never writes |
 | No shell | No command execution, no injection surface |
+| ASLR (opt-in) | Default builds are static non-PIE (smallest). `./build.sh --pie` produces a static-PIE binary that supports ASLR (all targets except x86 and mipsel, where origin lacks PIC startup support) |
 | No network | Pure local filesystem operations |
 | Signed releases | Cosign keyless signatures via GitHub Actions OIDC |
 

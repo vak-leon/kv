@@ -10,6 +10,19 @@ repository = "https://github.com/walruscraft/kv"
 keywords = ["linux", "embedded", "sysfs", "procfs", "diagnostics"]
 categories = ["command-line-utilities", "hardware-support"]
 
+[lib]
+# Logic lives in the library so unit tests can run on the host with std
+# (the no_std binary can't carry a test harness). No doctests - examples
+# in comments are for humans, not the test runner.
+doctest = false
+
+[[bin]]
+name = "kv"
+path = "src/main.rs"
+# The binary is no_std + origin startup; it can't host tests itself.
+test = false
+bench = false
+
 [features]
 default  = ["mem", "cpu", "mounts", "pci", "usb", "block", "thermal", "power", "net", "snapshot"]
 mem      = []
@@ -23,6 +36,9 @@ power    = []
 snapshot = []
 net      = []
 dt       = []
+# Static-PIE support: origin relocates the binary itself at startup so the
+# kernel can load it at a random address (ASLR). Used by ./build.sh --pie.
+pie      = ["origin/experimental-relocate"]
 
 [dependencies]
 # Minimal dependencies for size optimization

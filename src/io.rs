@@ -9,8 +9,6 @@
 //! Uses rustix for direct syscalls to minimize binary size.
 //! no_std compatible - uses stack-based types instead of String/Vec.
 
-#![allow(dead_code)]
-
 use core::mem::MaybeUninit;
 use core::str::FromStr;
 
@@ -34,44 +32,34 @@ where
         return;
     };
 
+    // RawDir::next refills its buffer via getdents until the directory is
+    // exhausted, so one pass is enough.
     let mut buf: [MaybeUninit<u8>; 2048] = [MaybeUninit::uninit(); 2048];
-    loop {
-        let mut raw_dir = RawDir::new(&fd, &mut buf);
-        let mut found_any = false;
-        while let Some(entry_result) = raw_dir.next() {
-            let Ok(entry) = entry_result else { continue };
-            found_any = true;
-            let name_bytes = entry.file_name().to_bytes();
-            // Skip . and ..
-            if name_bytes == b"." || name_bytes == b".." {
-                continue;
-            }
-            if let Ok(name_str) = core::str::from_utf8(name_bytes) {
-                callback(name_str);
-            }
+    let mut raw_dir = RawDir::new(&fd, &mut buf);
+    let mut count = 0usize;
+    while let Some(entry_result) = raw_dir.next() {
+        // A getdents error means the rest of the listing is unreadable
+        let Ok(entry) = entry_result else { break };
+        let name_bytes = entry.file_name().to_bytes();
+        // Skip . and ..
+        if name_bytes == b"." || name_bytes == b".." {
+            continue;
         }
-        if !found_any {
-            break;
+        if let Ok(name_str) = core::str::from_utf8(name_bytes) {
+            count += 1;
+            callback(name_str);
         }
     }
+    crate::debug::scan(path, count);
 }
 
 /// Read a symlink target into a StackString.
-/// Returns the full symlink path, not just the final component.
+/// Returns the link target as stored (e.g. "../../../drivers/virtio_net"),
+/// truncated if it exceeds the internal 256-byte buffer.
 pub fn read_symlink<const N: usize>(path: &str) -> Option<StackString<N>> {
-    // Open the symlink's parent directory and read it
-    let fd = openat(CWD, path, OFlags::RDONLY | OFlags::PATH | OFlags::NOFOLLOW, Mode::empty()).ok()?;
-
-    // Use readlink via /proc/self/fd/N trick
-    let mut proc_path: StackString<64> = StackString::new();
-    proc_path.push_str("/proc/self/fd/");
-    let mut itoa_buf = itoa::Buffer::new();
-    proc_path.push_str(itoa_buf.format(rustix::fd::AsRawFd::as_raw_fd(&fd)));
-
-    // Read the link target
-    let mut buf = [0u8; 256];
-    let n = read_file_bytes(proc_path.as_str(), &mut buf)?;
-    let link_path = core::str::from_utf8(&buf[..n]).ok()?;
+    let mut buf = [MaybeUninit::<u8>::uninit(); 256];
+    let (target, _) = rustix::fs::readlinkat_raw(CWD, path, &mut buf).ok()?;
+    let link_path = core::str::from_utf8(target).ok()?;
     Some(StackString::from_str(link_path))
 }
 
@@ -87,22 +75,14 @@ pub fn read_symlink_name<const N: usize>(path: &str) -> Option<StackString<N>> {
     }
 }
 
-/// Read raw bytes from a file into a buffer.
-/// Returns the number of bytes read.
-fn read_file_bytes(path: &str, buf: &mut [u8]) -> Option<usize> {
-    let fd = openat(CWD, path, OFlags::RDONLY, Mode::empty()).ok()?;
-    let n = read(&fd, buf).ok()?;
-    Some(n)
-}
-
 /// Hex digits lookup table.
 const HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
 
 /// Trait for converting bytes to hex characters.
 pub trait HexNibble {
-    /// High nibble as hex character (e.g., 0xAB → 'a').
+    /// High nibble as hex character (e.g., 0xAB -> 'a').
     fn hex_hi(self) -> char;
-    /// Low nibble as hex character (e.g., 0xAB → 'b').
+    /// Low nibble as hex character (e.g., 0xAB -> 'b').
     fn hex_lo(self) -> char;
 }
 
@@ -121,10 +101,12 @@ impl HexNibble for u8 {
 // Core file reading functions (stack-based, no allocation)
 // ============================================================================
 
-/// Read a file into a stack buffer and return trimmed content.
-/// Returns None if the file can't be read or isn't valid UTF-8.
-pub fn read_file_stack<const N: usize>(path: &str) -> Option<StackString<N>> {
-    // Open file read-only
+/// Read up to buf.len() raw bytes from a file, looping until the buffer is
+/// full or EOF: a single read() is not enough for procfs files like
+/// /proc/cpuinfo, which come in chunks and easily exceed 4 KiB on
+/// multi-core machines. No UTF-8 or content checks.
+/// Returns the number of bytes read.
+pub fn read_file_raw(path: &str, buf: &mut [u8]) -> Option<usize> {
     let fd = match openat(CWD, path, OFlags::RDONLY, Mode::empty()) {
         Ok(fd) => fd,
         Err(_e) => {
@@ -133,19 +115,34 @@ pub fn read_file_stack<const N: usize>(path: &str) -> Option<StackString<N>> {
         }
     };
 
-    // Read into buffer
-    let mut buf = [0u8; 4096];
-    let n = match read(&fd, &mut buf) {
-        Ok(n) => n,
-        Err(_e) => {
-            crate::dbg_fail!(path, _e);
-            return None;
+    let mut len = 0;
+    while len < buf.len() {
+        match read(&fd, &mut buf[len..]) {
+            Ok(0) => break,
+            Ok(n) => len += n,
+            Err(_e) => {
+                crate::dbg_fail!(path, _e);
+                return None;
+            }
         }
-    };
+    }
+    Some(len)
+}
 
-    // Convert to string and trim
-    let s = match core::str::from_utf8(&buf[..n]) {
+/// Read a file into a stack buffer and return trimmed content.
+/// Reads up to N bytes, anything past that is dropped (pick N generously).
+/// Returns None if the file can't be read, is empty, or isn't valid UTF-8.
+pub fn read_file_stack<const N: usize>(path: &str) -> Option<StackString<N>> {
+    let mut buf = [0u8; N];
+    let len = read_file_raw(path, &mut buf)?;
+
+    // Convert to string and trim. If we filled the buffer exactly, the cut
+    // may have split a multi-byte character - keep the valid prefix then.
+    let s = match core::str::from_utf8(&buf[..len]) {
         Ok(s) => s.trim(),
+        Err(e) if len == N && len - e.valid_up_to() < 4 => {
+            core::str::from_utf8(&buf[..e.valid_up_to()]).ok()?.trim()
+        }
         Err(_) => return None,
     };
 
@@ -189,7 +186,6 @@ pub fn parse_hex<T: FromStrRadix>(s: &str) -> Option<T> {
 }
 
 /// Read a file containing a hexadecimal value (stack-based).
-#[allow(dead_code)]
 pub fn read_file_hex<T: FromStrRadix>(path: &str) -> Option<T> {
     let s: StackString<64> = read_file_stack(path)?;
     parse_hex(s.as_str())
@@ -250,7 +246,6 @@ pub fn join_path<const N: usize>(base: &str, name: &str) -> StackString<N> {
 // ============================================================================
 
 /// Format a u16 as a hex string with "0x" prefix into a StackString.
-#[allow(dead_code)]
 pub fn format_hex_u16(val: u16) -> StackString<16> {
     let mut s = StackString::new();
     s.push_str("0x");
@@ -264,7 +259,6 @@ pub fn format_hex_u16(val: u16) -> StackString<16> {
 }
 
 /// Format a u8 as a hex string with "0x" prefix into a StackString.
-#[allow(dead_code)]
 pub fn format_hex_u8(val: u8) -> StackString<16> {
     let mut s = StackString::new();
     s.push_str("0x");
@@ -274,7 +268,6 @@ pub fn format_hex_u8(val: u8) -> StackString<16> {
 }
 
 /// Format a u32 as a 6-digit hex string with "0x" prefix (for PCI class codes).
-#[allow(dead_code)]
 pub fn format_hex_class(val: u32) -> StackString<16> {
     let mut s = StackString::new();
     s.push_str("0x");
@@ -338,5 +331,73 @@ pub fn format_sectors_human(sectors: u64, sector_size: u32) -> StackString<16> {
 
 #[cfg(test)]
 mod tests {
-    // Tests removed for no_std build
+    use super::*;
+
+    fn tmp_path(name: &str) -> std::string::String {
+        let mut p = std::env::temp_dir();
+        p.push(std::format!("kv-io-test-{}-{}", std::process::id(), name));
+        p.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn read_file_stack_reads_past_4096() {
+        // /proc/cpuinfo on many-core machines and /proc/self/mounts on
+        // container hosts are well over 4 KiB, and truncating them corrupts output.
+        let path = tmp_path("big");
+        let content = "x".repeat(6000);
+        std::fs::write(&path, &content).unwrap();
+        let s: Option<StackString<8192>> = read_file_stack(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(s.expect("readable").len(), 6000);
+    }
+
+    #[test]
+    fn read_file_stack_still_truncates_at_capacity() {
+        let path = tmp_path("cap");
+        let content = "y".repeat(300);
+        std::fs::write(&path, &content).unwrap();
+        let s: Option<StackString<64>> = read_file_stack(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(s.expect("readable").len(), 64);
+    }
+
+    #[test]
+    fn read_file_raw_reads_binary_and_empty() {
+        let path = tmp_path("raw");
+        std::fs::write(&path, [0x00u8, 0x01, 0x80, 0xff]).unwrap();
+        let mut buf = [0u8; 16];
+        let n = read_file_raw(&path, &mut buf);
+        assert_eq!(n, Some(4));
+        assert_eq!(&buf[..4], &[0x00, 0x01, 0x80, 0xff]);
+
+        std::fs::write(&path, b"").unwrap();
+        let n = read_file_raw(&path, &mut buf);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(n, Some(0));
+    }
+
+    #[test]
+    fn read_symlink_name_returns_target_basename() {
+        // Mirrors sysfs driver links: driver -> ../../../drivers/virtio_net
+        let link = tmp_path("driver-link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink("../../../drivers/virtio_net", &link).unwrap();
+        let name: Option<StackString<64>> = read_symlink_name(&link);
+        std::fs::remove_file(&link).unwrap();
+        assert_eq!(name.as_deref(), Some("virtio_net"));
+    }
+
+    #[test]
+    fn parse_hex_with_and_without_prefix() {
+        assert_eq!(parse_hex::<u16>("0x1af4"), Some(0x1af4));
+        assert_eq!(parse_hex::<u16>("1af4"), Some(0x1af4));
+        assert_eq!(parse_hex::<u16>("zz"), None);
+    }
+
+    #[test]
+    fn format_human_size_boundaries() {
+        assert_eq!(format_human_size(512).as_str(), "512");
+        assert_eq!(format_human_size(2048).as_str(), "2K");
+        assert_eq!(format_human_size(3 * 1024 * 1024 * 1024).as_str(), "3G");
+    }
 }

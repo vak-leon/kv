@@ -10,8 +10,6 @@
 //!
 //! This version uses stack-based storage to avoid heap allocation.
 
-#![allow(dead_code)]
-
 use core::ffi::{c_char, CStr};
 use crate::print;
 use crate::stack::StackString;
@@ -55,7 +53,7 @@ pub struct GlobalOptions {
     pub human: bool,
     /// Show help
     pub help: bool,
-    /// Filter pattern (case-sensitive if lowercase, insensitive if uppercase)
+    /// Filter pattern (from -f, or -F which also lowercases it)
     pub filter: Option<FilterStr>,
     /// Whether filter is case-insensitive (-F vs -f)
     pub filter_case_insensitive: bool,
@@ -132,6 +130,41 @@ pub struct Invocation {
     pub args: ExtraArgs,
 }
 
+/// Check the raw environment block for KV_DEBUG being set to a truthy value
+/// (anything but empty or "0"). We get envp straight from origin - there is
+/// no libc getenv here.
+///
+/// # Safety
+/// `envp` must be a valid NULL-terminated array of C strings (origin
+/// guarantees this for the pointer it passes to origin_main).
+pub unsafe fn env_has_kv_debug(envp: *const *const u8) -> bool {
+    if envp.is_null() {
+        return false;
+    }
+    let mut i = 0;
+    loop {
+        // SAFETY: caller guarantees envp is NULL-terminated
+        let entry = unsafe { *envp.offset(i) };
+        if entry.is_null() {
+            return false;
+        }
+        // SAFETY: caller guarantees entries are valid C strings
+        let bytes = unsafe { CStr::from_ptr(entry as *const c_char) }.to_bytes();
+        if let Some(value) = bytes.strip_prefix(b"KV_DEBUG=") {
+            return !value.is_empty() && value != b"0";
+        }
+        i += 1;
+    }
+}
+
+/// Warn on stderr that a -f/-F pattern was cut at MAX_FILTER_LEN bytes.
+fn warn_filter_truncated() {
+    print::eprint("Warning: filter truncated to ");
+    let mut buf = itoa::Buffer::new();
+    print::eprint(buf.format(MAX_FILTER_LEN));
+    print::eprintln(" bytes");
+}
+
 impl Invocation {
     /// Parse command-line arguments into an Invocation from raw argc/argv.
     ///
@@ -200,16 +233,8 @@ impl Invocation {
                             let next_cstr = unsafe { CStr::from_ptr(next_ptr as *const c_char) };
                             if let Ok(pattern) = next_cstr.to_str() {
                                 let mut filter = FilterStr::new();
-                                // Truncate if needed
-                                for (idx, c) in pattern.chars().enumerate() {
-                                    if idx >= MAX_FILTER_LEN {
-                                        print::eprint("Warning: filter truncated to ");
-                                        let mut buf = itoa::Buffer::new();
-                                        print::eprint(buf.format(MAX_FILTER_LEN));
-                                        print::eprintln(" chars");
-                                        break;
-                                    }
-                                    filter.push(c);
+                                if !filter.push_str(pattern) {
+                                    warn_filter_truncated();
                                 }
                                 opts.filter = Some(filter);
                                 opts.filter_case_insensitive = false;
@@ -218,24 +243,17 @@ impl Invocation {
                         }
                     }
                     "-F" | "--ifilter" => {
-                        // Next arg is the filter pattern (case-insensitive)
+                        // Next arg is the filter pattern (case-insensitive).
+                        // ASCII-lowercased here, and matching folds ASCII only.
                         if i + 1 < argc as isize {
                             let next_ptr = unsafe { *argv.offset(i + 1) };
                             let next_cstr = unsafe { CStr::from_ptr(next_ptr as *const c_char) };
                             if let Ok(pattern) = next_cstr.to_str() {
                                 let mut filter = FilterStr::new();
-                                // Lowercase and truncate if needed
-                                for (idx, c) in pattern.chars().enumerate() {
-                                    if idx >= MAX_FILTER_LEN {
-                                        print::eprint("Warning: filter truncated to ");
-                                        let mut buf = itoa::Buffer::new();
-                                        print::eprint(buf.format(MAX_FILTER_LEN));
-                                        print::eprintln(" chars");
+                                for c in pattern.chars() {
+                                    if !filter.push(c.to_ascii_lowercase()) {
+                                        warn_filter_truncated();
                                         break;
-                                    }
-                                    // Lowercase for case-insensitive matching
-                                    for lc in c.to_lowercase() {
-                                        filter.push(lc);
                                     }
                                 }
                                 opts.filter = Some(filter);
@@ -331,7 +349,7 @@ pub fn print_help() {
         "    -h, --human       Human-readable sizes (1K, 2.5M, 3G)\n",
         "    -f <pattern>      Filter output (case-sensitive)\n",
         "    -F <pattern>      Filter output (case-insensitive)\n",
-        "    -D, --debug       Show debug info (file access, parse errors)\n",
+        "    -D, --debug       Show debug info on stderr (file access, dir scans)\n",
         "    -H, --help        Show help (use 'kv <cmd> -H' for subcommand details)\n",
         "    -V, --version     Show version and compiled features\n",
         "\n",
@@ -568,6 +586,84 @@ pub fn print_subcommand_help(subcommand: &str) {
 
 #[cfg(test)]
 mod tests {
-    // Tests removed for no_std build
-    // They require alloc for Vec<String> in test harness
+    use super::*;
+    use std::ffi::CString;
+    use std::vec::Vec;
+
+    /// Build a NULL-terminated argv (with "kv" as argv[0]) and parse it.
+    fn parse(args: &[&str]) -> Invocation {
+        let mut cstrings: Vec<CString> = Vec::with_capacity(args.len() + 1);
+        cstrings.push(CString::new("kv").unwrap());
+        for a in args {
+            cstrings.push(CString::new(*a).unwrap());
+        }
+        let ptrs: Vec<*const u8> = cstrings.iter().map(|c| c.as_ptr() as *const u8).collect();
+        // SAFETY: ptrs points at valid C strings for the duration of the call
+        unsafe { Invocation::parse_from_raw(ptrs.len() as i32, ptrs.as_ptr()) }
+    }
+
+    #[test]
+    fn subcommand_and_flags() {
+        let inv = parse(&["pci", "-j", "-v"]);
+        assert_eq!(inv.subcommand.as_deref(), Some("pci"));
+        assert!(inv.options.json);
+        assert!(inv.options.verbose);
+        assert!(!inv.options.pretty);
+    }
+
+    #[test]
+    fn flags_before_subcommand() {
+        let inv = parse(&["-j", "cpu"]);
+        assert_eq!(inv.subcommand.as_deref(), Some("cpu"));
+        assert!(inv.options.json);
+    }
+
+    #[test]
+    fn combined_short_flags() {
+        let inv = parse(&["mem", "-jph"]);
+        assert!(inv.options.json);
+        assert!(inv.options.pretty);
+        assert!(inv.options.human);
+    }
+
+    #[test]
+    fn filter_takes_next_arg() {
+        let inv = parse(&["net", "-f", "eth"]);
+        assert_eq!(inv.options.filter.as_deref(), Some("eth"));
+        assert!(!inv.options.filter_case_insensitive);
+    }
+
+    #[test]
+    fn ifilter_lowercases_pattern() {
+        let inv = parse(&["net", "-F", "WlP"]);
+        assert_eq!(inv.options.filter.as_deref(), Some("wlp"));
+        assert!(inv.options.filter_case_insensitive);
+    }
+
+    #[test]
+    fn version_and_help_requests() {
+        assert!(parse(&["--version"]).wants_version());
+        assert!(parse(&["--help"]).wants_help());
+        let inv = parse(&["help", "pci"]);
+        assert!(inv.wants_help());
+        assert_eq!(inv.help_subject(), Some("pci"));
+    }
+
+    #[test]
+    fn env_kv_debug_detection() {
+        fn check(entries: &[&[u8]]) -> bool {
+            let cstrings: Vec<CString> =
+                entries.iter().map(|e| CString::new(*e).unwrap()).collect();
+            let mut ptrs: Vec<*const u8> =
+                cstrings.iter().map(|c| c.as_ptr() as *const u8).collect();
+            ptrs.push(core::ptr::null());
+            // SAFETY: NULL-terminated array of valid C strings
+            unsafe { env_has_kv_debug(ptrs.as_ptr()) }
+        }
+        assert!(check(&[b"PATH=/bin", b"KV_DEBUG=1"]));
+        assert!(!check(&[b"PATH=/bin", b"KV_DEBUG=0"]));
+        assert!(!check(&[b"PATH=/bin", b"KV_DEBUG="]));
+        assert!(!check(&[b"PATH=/bin"]));
+        assert!(!check(&[]));
+    }
 }

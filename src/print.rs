@@ -4,8 +4,6 @@
 //! pulling in core::fmt machinery. They're designed to be drop-in replacements
 //! for the most common print patterns in kv.
 
-#![allow(dead_code)]
-
 use rustix::io::write;
 use rustix::stdio::{stdout, stderr};
 

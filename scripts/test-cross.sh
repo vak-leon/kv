@@ -79,10 +79,12 @@ echo "Cross-compilation smoke test"
 echo "============================"
 echo
 
-test_target "x86_64"  "x86_64-unknown-linux-gnu"     ""
-test_target "x86"     "i686-unknown-linux-gnu"       "qemu-i386-static"
-test_target "arm64"   "aarch64-unknown-linux-gnu"    "qemu-aarch64-static"
-test_target "arm"     "arm-unknown-linux-gnueabihf"  "qemu-arm-static"
-test_target "riscv64" "riscv64gc-unknown-linux-gnu"  "qemu-riscv64-static"
+test_target "x86_64"  "x86_64-unknown-linux-gnu"      ""
+test_target "x86"     "i686-unknown-linux-gnu"        "qemu-i386-static"
+test_target "arm64"   "aarch64-unknown-linux-gnu"     "qemu-aarch64-static"
+test_target "arm"     "arm-unknown-linux-gnueabihf"   "qemu-arm-static"
+test_target "riscv64" "riscv64gc-unknown-linux-gnu"   "qemu-riscv64-static"
+test_target "ppc64"   "powerpc64le-unknown-linux-gnu" "qemu-ppc64le-static"
+test_target "mips"    "mipsel-unknown-linux-gnu"      "qemu-mipsel-static"
 
 echo "Done."
